@@ -35,6 +35,11 @@ Notes:
   - Session numbers correspond to the order shown by 'screen -ls'
   - The tail feature uses screen's hardcopy command to capture scrollback
   - Scrollback is limited by screen's defscrollback setting (default: 1000 lines)
+  - The tail command attempts UTF-8 conversion for international characters
+  - For best results with non-ASCII characters, add to ~/.screenrc:
+      defutf8 on
+      setenv LANG C.UTF-8
+    Existing sessions started without UTF-8 may show garbled characters.
 EOF
 }
 
