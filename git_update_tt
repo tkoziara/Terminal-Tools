@@ -67,7 +67,21 @@ get_current_branch() {
 
 # Get staged file names (basename only) for auto commit message
 get_staged_files() {
-    git diff --cached --name-only 2>/dev/null | xargs -n1 basename 2>/dev/null | sort -u | tr '\n' ', ' | sed 's/, $//'
+    local files=()
+    while IFS= read -r file; do
+        [[ -n "$file" ]] && files+=("$(basename "$file")")
+    done < <(git diff --cached --name-only 2>/dev/null | sort -u)
+    
+    # Join with ", "
+    local result=""
+    for f in "${files[@]}"; do
+        if [[ -z "$result" ]]; then
+            result="$f"
+        else
+            result="$result, $f"
+        fi
+    done
+    echo "$result"
 }
 
 # Check if we're in a git repository
@@ -155,12 +169,17 @@ main() {
         if [[ "$USE_EDITOR" == "true" ]]; then
             # Find available editor
             local editor="${VISUAL:-${EDITOR:-vi}}"
+            # Generate default message to pre-load in editor
+            local staged_files
+            staged_files=$(get_staged_files)
+            local default_message="updated $staged_files"
+            
             if [[ "$DRY_RUN" == "true" ]]; then
-                info "Commit message: [will open $editor]"
+                info "Commit message: [will open $editor with: \"$default_message\"]"
                 run_cmd git commit
             else
                 info "Opening $editor for commit message..."
-                GIT_EDITOR="$editor" git commit
+                GIT_EDITOR="$editor" git commit -e -m "$default_message"
             fi
         elif [[ -n "$COMMIT_MESSAGE" ]]; then
             # Custom message provided
