@@ -5,6 +5,10 @@
 
 set -e
 
+# Ensure UTF-8 encoding for proper handling of international characters
+export LANG="${LANG:-C.UTF-8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+
 # Print usage information
 usage() {
     cat <<EOF
@@ -227,7 +231,7 @@ main() {
                 return 1
             fi
             
-            tail_sessions "$num_lines" | less -R
+            tail_sessions "$num_lines" | less -R --no-init
             return 0
             ;;
         [0-9]*)
