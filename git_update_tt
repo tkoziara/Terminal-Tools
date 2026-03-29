@@ -169,17 +169,12 @@ main() {
         if [[ "$USE_EDITOR" == "true" ]]; then
             # Find available editor
             local editor="${VISUAL:-${EDITOR:-vi}}"
-            # Generate default message to pre-load in editor
-            local staged_files
-            staged_files=$(get_staged_files)
-            local default_message="updated $staged_files"
-            
             if [[ "$DRY_RUN" == "true" ]]; then
-                info "Commit message: [will open $editor with: \"$default_message\"]"
+                info "Commit message: [will open $editor]"
                 run_cmd git commit
             else
                 info "Opening $editor for commit message..."
-                GIT_EDITOR="$editor" git commit -e -m "$default_message"
+                GIT_EDITOR="$editor" git commit
             fi
         elif [[ -n "$COMMIT_MESSAGE" ]]; then
             # Custom message provided
