@@ -158,6 +158,8 @@ tail_sessions() {
                 # Convert to UTF-8 - screen hardcopy captures raw terminal buffer bytes
                 local tmpfile_utf8="$tmpfile.utf8"
                 local tmpfile_clean="$tmpfile.clean"
+                local best_file=""
+                local best_score=0
                 
                 # Strip control characters that screen hardcopy captures
                 tr -d '\000-\010\013\014\016-\037' < "$tmpfile" > "$tmpfile_clean" 2>/dev/null || cp "$tmpfile" "$tmpfile_clean"
@@ -165,15 +167,27 @@ tail_sessions() {
                 # Check if already valid UTF-8
                 if iconv -f UTF-8 -t UTF-8 "$tmpfile_clean" >/dev/null 2>&1; then
                     cat "$tmpfile_clean" | tail -n "$num_lines"
-                # Try recode CP1250 -> UTF-8 (common for Polish sessions)
-                elif command -v recode >/dev/null 2>&1 && recode CP1250..UTF-8 "$tmpfile_clean" 2>/dev/null; then
-                    cat "$tmpfile_clean" | tail -n "$num_lines"
-                # Fallback: iconv CP1250 -> UTF-8, skip invalid
-                elif iconv -f CP1250 -t UTF-8 -c "$tmpfile_clean" > "$tmpfile_utf8" 2>/dev/null; then
-                    cat "$tmpfile_utf8" | tail -n "$num_lines"
-                # Last resort: raw content
                 else
-                    cat "$tmpfile_clean" | tail -n "$num_lines"
+                    # Try different encodings and pick the one with most Polish diacritics
+                    for enc in "CP1250" "ISO-8859-2" "ISO-8859-15"; do
+                        local test_file="$tmpfile.$enc"
+                        if iconv -f "$enc" -t UTF-8 -c "$tmpfile_clean" > "$test_file" 2>/dev/null; then
+                            # Count Polish-specific characters (ą, ć, ę, ł, ń, ó, ś, ź, ż and uppercase)
+                            local score
+                            score=$(grep -o '[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]' "$test_file" 2>/dev/null | wc -l)
+                            if [[ $score -gt $best_score ]]; then
+                                best_score=$score
+                                best_file="$test_file"
+                            fi
+                        fi
+                    done
+                    
+                    # Output best conversion or fallback
+                    if [[ -n "$best_file" && -f "$best_file" ]]; then
+                        cat "$best_file" | tail -n "$num_lines"
+                    else
+                        cat "$tmpfile_clean" | tail -n "$num_lines"
+                    fi
                 fi
             else
                 echo ""
