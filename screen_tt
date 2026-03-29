@@ -8,6 +8,7 @@ set -e
 # Ensure UTF-8 encoding for proper handling of international characters
 export LANG="${LANG:-C.UTF-8}"
 export LC_ALL="${LC_ALL:-C.UTF-8}"
+export LESSCHARSET="utf-8"
 
 # Print usage information
 usage() {
@@ -147,14 +148,33 @@ tail_sessions() {
         if screen -S "$name" -X hardcopy -h "$tmpfile" 2>/dev/null; then
             # Small delay to ensure file is written
             sleep 0.1
-            
+
             if [[ -f "$tmpfile" ]]; then
                 echo ""
                 echo "═══════════════════════════════════════════════════════════"
                 echo "  Session: $name ($status)"
                 echo "═══════════════════════════════════════════════════════════"
                 echo ""
-                tail -n "$num_lines" "$tmpfile" 2>/dev/null || echo "(no content)"
+                # Convert to UTF-8 based on detected encoding
+                local tmpfile_utf8="$tmpfile.utf8"
+                # Detect encoding using file command
+                local encoding
+                encoding=$(file -b --mime-encoding "$tmpfile" 2>/dev/null || echo "binary")
+                
+                if [[ "$encoding" == "utf-8" ]] || [[ "$encoding" == "us-ascii" ]]; then
+                    # Already UTF-8 or ASCII (subset of UTF-8)
+                    cat "$tmpfile" | tail -n "$num_lines"
+                elif iconv -f "$encoding" -t UTF-8 "$tmpfile" > "$tmpfile_utf8" 2>/dev/null; then
+                    # Convert from detected encoding
+                    cat "$tmpfile_utf8" | tail -n "$num_lines"
+                else
+                    # Fallback: try Latin-2 for Polish, then raw
+                    if iconv -f ISO-8859-2 -t UTF-8 "$tmpfile" > "$tmpfile_utf8" 2>/dev/null; then
+                        cat "$tmpfile_utf8" | tail -n "$num_lines"
+                    else
+                        cat "$tmpfile" | tail -n "$num_lines"
+                    fi
+                fi
             else
                 echo ""
                 echo "═══════════════════════════════════════════════════════════"
