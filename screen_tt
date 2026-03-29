@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+#
+# screen_tt - Extended screen command utility
+#
+
+set -e
+
+# Print usage information
+usage() {
+    cat <<EOF
+Usage: screen_tt [OPTIONS] [SESSION_NUMBER | tail -N | tail -n N]
+
+Extended screen command utility for managing GNU Screen sessions.
+
+Options:
+  -h, --help          Show this help message and exit
+
+Commands:
+  (no args)           List all running screen sessions with numbers
+  SESSION_NUMBER      Attach to the specified screen session by number
+  tail -N, tail -n N  Show last N lines of stdout from all sessions
+
+Examples:
+  screen_tt                    # List all sessions with numbers
+  screen_tt 1                  # Attach to session #1
+  screen_tt tail -50           # Show last 50 lines from all sessions
+  screen_tt tail -n 100        # Show last 100 lines from all sessions
+
+Notes:
+  - Session numbers correspond to the order shown by 'screen -ls'
+  - The tail feature uses screen's hardcopy command to capture scrollback
+  - Scrollback is limited by screen's defscrollback setting (default: 1000 lines)
+EOF
+}
+
+# Get list of screen sessions with their IDs and names
+# Returns lines in format: "session_id session_name"
+# Order is stable and matches 'screen -ls' output order
+get_sessions() {
+    screen -ls 2>/dev/null | \
+        grep -E '^\s+[0-9]+\.' | \
+        sed -E 's/^\s+([0-9]+)\.[^[:space:]]+[[:space:]]+\([^)]+\)[[:space:]]+([0-9]+-[0-9]+[.][^[:space:]]+)[[:space:]]*$/\2 \1/' | \
+        awk '{print $2, $1}'
+}
+
+# Get sessions in a more robust way, handling various screen -ls output formats
+get_sessions_robust() {
+    local sessions=()
+    while IFS= read -r line; do
+        # Match lines like:  12345.pts-0.hostname   (Detached)
+        if [[ $line =~ ^[[:space:]]+([0-9]+)\.([^[:space:]]+)[[:space:]]+\(([^\)]+)\) ]]; then
+            local socket="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            local status="${BASH_REMATCH[3]}"
+            sessions+=("$name $socket")
+        fi
+    done < <(screen -ls 2>/dev/null)
+    
+    for session in "${sessions[@]}"; do
+        echo "$session"
+    done
+}
+
+# List all screen sessions with numbers
+list_sessions() {
+    local sessions=()
+    local count=0
+    
+    while IFS= read -r line; do
+        if [[ $line =~ ^[[:space:]]+([0-9]+)\.([^[:space:]]+)[[:space:]]+\(([^\)]+)\) ]]; then
+            local socket="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            local status="${BASH_REMATCH[3]}"
+            sessions+=("$name|$status")
+        fi
+    done < <(screen -ls 2>/dev/null)
+    
+    if [[ ${#sessions[@]} -eq 0 ]]; then
+        echo "No running screen sessions found."
+        return 0
+    fi
+    
+    echo "Running screen sessions:"
+    echo ""
+    local num=1
+    for session in "${sessions[@]}"; do
+        local name="${session%%|*}"
+        local status="${session##*|}"
+        printf "  %3d  %s  (%s)\n" "$num" "$name" "$status"
+        ((num++))
+    done
+    echo ""
+}
+
+# Get session name by number
+get_session_by_number() {
+    local target_num="$1"
+    local count=0
+    
+    while IFS= read -r line; do
+        if [[ $line =~ ^[[:space:]]+([0-9]+)\.([^[:space:]]+)[[:space:]]+\(([^\)]+)\) ]]; then
+            ((count++))
+            if [[ $count -eq $target_num ]]; then
+                echo "${BASH_REMATCH[2]}"
+                return 0
+            fi
+        fi
+    done < <(screen -ls 2>/dev/null)
+    
+    return 1
+}
+
+# Attach to a screen session
+attach_session() {
+    local session_name="$1"
+    
+    # Verify session exists
+    if ! screen -ls 2>/dev/null | grep -qE "^\s+[0-9]+\.$session_name[[:space:]]"; then
+        echo "Error: Session '$session_name' not found or not running." >&2
+        echo "Run 'screen_tt' without arguments to see available sessions." >&2
+        return 1
+    fi
+    
+    exec screen -x "$session_name"
+}
+
+# Show tail of stdout from all sessions
+tail_sessions() {
+    local num_lines="$1"
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+    
+    local found_sessions=0
+    
+    while IFS= read -r line; do
+        if [[ $line =~ ^[[:space:]]+([0-9]+)\.([^[:space:]]+)[[:space:]]+\(([^\)]+)\) ]]; then
+            local socket="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            local status="${BASH_REMATCH[3]}"
+            found_sessions=1
+            
+            local tmpfile="$tmpdir/hardcopy_$socket"
+            
+            # Use hardcopy -h to capture scrollback buffer
+            # This sends a command to the running screen session
+            if screen -S "$name" -X hardcopy -h "$tmpfile" 2>/dev/null; then
+                # Small delay to ensure file is written
+                sleep 0.1
+                
+                if [[ -f "$tmpfile" ]]; then
+                    echo ""
+                    echo "═══════════════════════════════════════════════════════════"
+                    echo "  Session: $name ($status)"
+                    echo "═══════════════════════════════════════════════════════════"
+                    echo ""
+                    tail -n "$num_lines" "$tmpfile" 2>/dev/null || echo "(no content)"
+                else
+                    echo ""
+                    echo "═══════════════════════════════════════════════════════════"
+                    echo "  Session: $name ($status)"
+                    echo "═══════════════════════════════════════════════════════════"
+                    echo ""
+                    echo "(could not capture scrollback - session may have restricted permissions)"
+                fi
+            else
+                echo ""
+                echo "═══════════════════════════════════════════════════════════"
+                echo "  Session: $name ($status)"
+                echo "═══════════════════════════════════════════════════════════"
+                echo ""
+                echo "(could not send hardcopy command - session may be unresponsive)"
+            fi
+        fi
+    done < <(screen -ls 2>/dev/null)
+    
+    if [[ $found_sessions -eq 0 ]]; then
+        echo "No running screen sessions found."
+        return 0
+    fi
+    
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  End of output - Press 'q' to quit, '/' to search, 'n' for next match"
+    echo "═══════════════════════════════════════════════════════════"
+}
+
+# Main script logic
+main() {
+    # Check if screen is installed
+    if ! command -v screen &>/dev/null; then
+        echo "Error: GNU Screen is not installed or not in PATH." >&2
+        return 1
+    fi
+    
+    # No arguments - list sessions
+    if [[ $# -eq 0 ]]; then
+        list_sessions
+        return 0
+    fi
+    
+    # Parse arguments
+    case "$1" in
+        -h|--help)
+            usage
+            return 0
+            ;;
+        tail)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: 'tail' command requires a line count argument." >&2
+                echo "Usage: screen_tt tail -N  or  screen_tt tail -n N" >&2
+                return 1
+            fi
+            
+            local num_lines
+            case "$2" in
+                -n)
+                    if [[ $# -lt 3 ]]; then
+                        echo "Error: Missing line count after '-n'." >&2
+                        echo "Usage: screen_tt tail -n N" >&2
+                        return 1
+                    fi
+                    num_lines="$3"
+                    ;;
+                -*)
+                    # Handle -N format (e.g., -50)
+                    num_lines="${1#-}"
+                    if ! [[ "$num_lines" =~ ^[0-9]+$ ]]; then
+                        echo "Error: Invalid line count '$2'. Must be a positive number." >&2
+                        return 1
+                    fi
+                    ;;
+                *)
+                    echo "Error: Invalid argument '$2'. Use '-N' or '-n N' format." >&2
+                    return 1
+                    ;;
+            esac
+            
+            if ! [[ "$num_lines" =~ ^[0-9]+$ ]] || [[ "$num_lines" -eq 0 ]]; then
+                echo "Error: Line count must be a positive number." >&2
+                return 1
+            fi
+            
+            tail_sessions "$num_lines" | less -R
+            return 0
+            ;;
+        [0-9]*)
+            # Numeric argument - attach to session
+            local session_num="$1"
+            local session_name
+            session_name=$(get_session_by_number "$session_num")
+            
+            if [[ -z "$session_name" ]]; then
+                local total_sessions
+                total_sessions=$(screen -ls 2>/dev/null | grep -cE '^\s+[0-9]+\.' || echo 0)
+                
+                if [[ $total_sessions -eq 0 ]]; then
+                    echo "Error: No running screen sessions found." >&2
+                else
+                    echo "Error: Session number $session_num does not exist." >&2
+                    echo "Available sessions are numbered 1 to $total_sessions." >&2
+                    echo "" >&2
+                    echo "Run 'screen_tt' without arguments to see all sessions." >&2
+                fi
+                return 1
+            fi
+            
+            attach_session "$session_name"
+            ;;
+        *)
+            echo "Error: Unknown argument '$1'." >&2
+            echo "" >&2
+            echo "Run 'screen_tt --help' for usage information." >&2
+            return 1
+            ;;
+    esac
+}
+
+main "$@"

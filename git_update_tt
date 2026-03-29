@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+#
+# git_update_tt - Quick git update: stage, commit, rebase, push
+#
+
+set -e
+
+# Default values
+COMMIT_MESSAGE=""
+USE_EDITOR=false
+DRY_RUN=false
+STAGE_ALL=true
+FILES=()
+
+# Print usage information
+usage() {
+    cat <<EOF
+Usage: git_update_tt [OPTIONS] [FILE|PATH...]
+
+Quick git update workflow: stage, commit, rebase on remote, and push.
+
+Options:
+  -m MESSAGE    Use custom commit message
+  -vim          Open editor (vim/vi) for commit message
+  --dry-run     Show commands without executing
+  -h, --help    Show this help message and exit
+
+Examples:
+  git_update_tt                      # stage all, auto commit message
+  git_update_tt file.txt             # stage specific file
+  git_update_tt src/ lib/            # stage multiple paths
+  git_update_tt -m "fix bug"         # custom commit message
+  git_update_tt -m "msg" file.txt    # custom message + specific file
+  git_update_tt -vim                 # open editor for commit message
+  git_update_tt --dry-run            # preview commands
+
+Notes:
+  - Without -m or -vim, commit message is auto-generated from staged file names
+  - Rebases onto origin/<current-branch>
+  - Skips commit/push if nothing is staged
+EOF
+}
+
+# Print error message to stderr
+error() {
+    echo "Error: $1" >&2
+}
+
+# Print info message
+info() {
+    echo "$1"
+}
+
+# Execute or preview a command
+run_cmd() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[DRY-RUN] $*"
+    else
+        "$@"
+    fi
+}
+
+# Get current git branch name
+get_current_branch() {
+    git rev-parse --abbrev-ref HEAD
+}
+
+# Get staged file names (basename only) for auto commit message
+get_staged_files() {
+    git diff --cached --name-only 2>/dev/null | xargs -n1 basename 2>/dev/null | sort -u | tr '\n' ', ' | sed 's/, $//'
+}
+
+# Check if we're in a git repository
+check_git_repo() {
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        error "Not a git repository."
+        exit 1
+    fi
+}
+
+# Check if remote branch exists
+check_remote_branch() {
+    local branch="$1"
+    if ! git rev-parse --verify "origin/$branch" >/dev/null 2>&1; then
+        error "Remote branch 'origin/$branch' does not exist. Make sure the branch is pushed."
+        exit 1
+    fi
+}
+
+# Parse command line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -m)
+                if [[ -z "$2" || "$2" == -* ]]; then
+                    error "Option '-m' requires a commit message."
+                    echo "Usage: git_update_tt -m \"message\" [FILE...]" >&2
+                    exit 1
+                fi
+                COMMIT_MESSAGE="$2"
+                shift 2
+                ;;
+            -vim)
+                USE_EDITOR=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            -*)
+                error "Unknown option: $1"
+                echo "" >&2
+                echo "Run 'git_update_tt --help' for usage information." >&2
+                exit 1
+                ;;
+            *)
+                # Positional argument (file/path to stage)
+                FILES+=("$1")
+                STAGE_ALL=false
+                shift
+                ;;
+        esac
+    done
+}
+
+# Main function
+main() {
+    parse_args "$@"
+    check_git_repo
+    
+    local branch
+    branch=$(get_current_branch)
+    
+    info "Branch: $branch"
+    
+    # Stage files
+    if [[ "$STAGE_ALL" == "true" ]]; then
+        info "Staging: all changes (.)"
+        run_cmd git add .
+    else
+        info "Staging: ${FILES[*]}"
+        run_cmd git add "${FILES[@]}"
+    fi
+    
+    # Check if anything is staged
+    if ! git diff --cached --quiet 2>/dev/null; then
+        # Something is staged, proceed with commit
+        
+        # Determine commit message
+        if [[ "$USE_EDITOR" == "true" ]]; then
+            # Find available editor
+            local editor="${VISUAL:-${EDITOR:-vi}}"
+            if [[ "$DRY_RUN" == "true" ]]; then
+                info "Commit message: [will open $editor]"
+                run_cmd git commit
+            else
+                info "Opening $editor for commit message..."
+                GIT_EDITOR="$editor" git commit
+            fi
+        elif [[ -n "$COMMIT_MESSAGE" ]]; then
+            # Custom message provided
+            info "Commit message: \"$COMMIT_MESSAGE\""
+            run_cmd git commit -m "$COMMIT_MESSAGE"
+        else
+            # Auto-generate message from staged file names
+            local staged_files
+            staged_files=$(get_staged_files)
+            local auto_message="updated $staged_files"
+            info "Commit message: \"$auto_message\""
+            run_cmd git commit -m "$auto_message"
+        fi
+        
+        # Fetch, rebase, push
+        info "Fetching origin..."
+        run_cmd git fetch origin
+        
+        info "Rebasing onto origin/$branch..."
+        run_cmd git rebase "origin/$branch"
+        
+        info "Pushing to origin/$branch..."
+        run_cmd git push origin "$branch"
+        
+        info "Done."
+    else
+        # Nothing staged
+        info "Nothing to commit (no changes staged)."
+        
+        # Still offer to pull/rebase if desired
+        echo ""
+        echo "Tip: Run 'git_update_tt <file>' to stage and commit specific files."
+        echo "     Or run 'git_update_tt' after making changes."
+    fi
+}
+
+main "$@"
